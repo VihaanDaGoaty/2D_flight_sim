@@ -29,7 +29,9 @@ stall_angle = 13.682 #units are degrees
 c_l_angleSlope = 0.09 #units are 1/degrees
 c_l_y_intercept = 0.15 #unitless
 c_l_stallSlope = 0.05 #units are 1/degrees, drop after stall
-c_d = 0.03 #unitless, referenced to wing area
+c_d_parasite = 0.03 #unitless, referenced to wing area
+aspect_ratio = 9.4 #unitless, wingspan^2 / wing area
+oswald_efficiency = 0.8 #unitless
 
 # colors
 SKY_BLUE = (135, 206, 235)
@@ -213,9 +215,15 @@ while running:
 
     # drag, opposite to velocity
     if vel.magnitude() > 1:
-        drag_mag = 0.5 * c_d * rho * vel.magnitude()**2 * wing_area
-        force_drag = -vel.normalize() * drag_mag
+        dyn_pressure = 0.5 * rho * vel.magnitude()**2 * wing_area
+        c_d_induced = c_l**2 / (math.pi * aspect_ratio * oswald_efficiency)
+        f_drag_parasite = -vel.normalize() * c_d_parasite * dyn_pressure
+        f_drag_induced = -vel.normalize() * c_d_induced * dyn_pressure
+        force_drag = f_drag_parasite + f_drag_induced
     else:
+        c_d_induced = 0
+        f_drag_parasite = Vector2(0, 0)
+        f_drag_induced = Vector2(0, 0)
         force_drag = Vector2(0, 0)
 
     # normal force cancels whatever downward force is left
@@ -261,11 +269,12 @@ while running:
             round(vel.x, 3), round(vel.y, 3), round(vel.magnitude(), 3),
             round(acc.x, 3), round(acc.y, 3),
             round(body_angle, 2), round(flight_angle, 2), round(aoa, 2),
-            round(c_l, 4),
+            round(c_l, 4), round(c_d_induced, 4),
             round(current_thrust, 1),
             round(current_thrust_force.x, 1), round(current_thrust_force.y, 1),
             round(force_lift.x, 1), round(force_lift.y, 1),
             round(force_drag.x, 1), round(force_drag.y, 1),
+            round(f_drag_parasite.magnitude(), 1), round(f_drag_induced.magnitude(), 1),
             round(force_ground_friction.x, 1),
             round(normal_force.y, 1),
             round(netForce.x, 1), round(netForce.y, 1),
@@ -345,10 +354,11 @@ while running:
             screen.blit(font.render(f'x-disp     {x_disp:8.1f} m', True, (0, 0, 0)), (30, 564))
 
         screen.blit(font.render(f'lift coeff {c_l:8.2f}', True, (0, 0, 0)), (30, 582))
+        screen.blit(font.render(f'drag ind   {c_d_induced:8.3f}', True, (0, 0, 0)), (30, 600))
         if abs(aoa) > stall_angle:
-            screen.blit(font.render('STALL', True, (200, 0, 0)), (30, 600))
+            screen.blit(font.render('STALL', True, (200, 0, 0)), (30, 618))
         if on_ground:
-            screen.blit(font.render('GROUNDED', True, (200, 0, 0)), (30, 618))
+            screen.blit(font.render('GROUNDED', True, (200, 0, 0)), (30, 636))
 
         # wing diagram
         draw_wing(WIDTH - 190, 30, body_angle, flight_angle)
@@ -367,10 +377,11 @@ if save_raw_data and run_data:
                          'vel_x_ms', 'vel_y_ms', 'speed_ms',
                          'acc_x_ms2', 'acc_y_ms2',
                          'body_angle_deg', 'flight_angle_deg', 'aoa_deg',
-                         'c_l',
+                         'c_l', 'c_d_induced',
                          'thrust_N', 'thrust_x_N', 'thrust_y_N',
                          'lift_x_N', 'lift_y_N',
                          'drag_x_N', 'drag_y_N',
+                         'drag_parasite_N', 'drag_induced_N',
                          'friction_x_N', 'normal_y_N',
                          'netforce_x_N', 'netforce_y_N',
                          'on_ground', 'stalled'])
