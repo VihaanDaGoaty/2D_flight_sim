@@ -7,6 +7,8 @@ import math
 import csv
 import datetime
 
+import F16 as plane
+
 # --- setup ---
 pygame.init()
 pygame.font.init()
@@ -23,54 +25,49 @@ show_extra_displays = True
 save_raw_data = True
 save_log_dt = 0.1 #seconds between logged rows
 
-rho = 1.225 #units are kg per m^3
-wing_area = 122.4 #units are meters^2, A320-100
-stall_angle = 13.682 #units are degrees
-c_l_angleSlope = 0.09 #units are 1/degrees
-c_l_y_intercept = 0.15 #unitless
-c_l_stallSlope = 0.05 #units are 1/degrees, drop after stall
-c_d_parasite = 0.03 #unitless, referenced to wing area
-aspect_ratio = 9.4 #unitless, wingspan^2 / wing area
-oswald_efficiency = 0.8 #unitless
+# international standard atmosphere, troposphere
+rho_sea_level = 1.225 #units are kg per m^3
+temp_sea_level = 288.15 #units are kelvin
+lapse_rate = 0.0065 #units are kelvin per meter
+rho_exponent = 4.2561 #unitless
 
 # colors
 SKY_BLUE = (135, 206, 235)
 GRASS_GREEN = (80, 200, 120)
 RED = (220, 50, 50)
 
-body_angle = 0
-angle_step = 1
-
-plane_max_thrust = 222000
+body_pitch = 0 #units are degrees, nose up positive
+pitch_step = 1
 
 current_thrust = 0
-
-thrust_step = 500
-
 current_thrust_force = Vector2(0,0)
+
+fuel_mass = plane.fuel_mass_start
+mass = plane.dry_mass + fuel_mass
 
 # physics
 clouds = [(Vector2(random.randint(-1000, 20000), random.randint(-5000, HEIGHT-200)), random.randint(0, 3)) for _ in range(1000)]
 cam_pos = Vector2(WIDTH / 2, HEIGHT / 2)
 vel = Vector2(0, 0)
 acc = Vector2(0, 0)
-mass = 64000
 playback_speed = 1
 dt = playback_speed / FPS  # seconds
 zoom = 2
 zoom_min = 0.25
 zoom_max = 8
 margin = 100
-plane_size = [37.6, 11.8]
 cloud_size = [100, 50]
 
-force_gravity = Vector2(0, 9.81*mass)
-MOVE_ACC = 80
 GROUND_Y = HEIGHT * 0.75
-RADIUS = plane_size[1] / 2
+RADIUS = plane.size[1] / 2
 
 pos = Vector2(WIDTH / 2, GROUND_Y - RADIUS)
 start_x = pos.x
+
+# gauge ranges, scaled to the aircraft
+acc_ref = 7
+vel_ref = 150
+force_ref = plane.dry_mass * 9.81 * 0.4
 
 # data logging
 start_time = datetime.datetime.now()
@@ -78,30 +75,30 @@ run_data = []
 sim_time = 0
 next_log_time = 0
 
-plane_src = pygame.image.load("character.png")
+plane_src = pygame.image.load(plane.image_file)
 cloud_src = [pygame.image.load("cloud0.png"),
              pygame.image.load("cloud1.png"),
              pygame.image.load("cloud2.png"),
              pygame.image.load("cloud3.png")]
 
 def c_l_fromAngle(a):
-    c_l_peak = c_l_angleSlope * stall_angle + c_l_y_intercept
-    if a > stall_angle:
-        c_l = c_l_peak - c_l_stallSlope * (a - stall_angle)
+    c_l_peak = plane.c_l_angleSlope * plane.stall_angle + plane.c_l_y_intercept
+    if a > plane.stall_angle:
+        c_l = c_l_peak - plane.c_l_stallSlope * (a - plane.stall_angle)
         if c_l < 0:
             c_l = 0
         return c_l
-    if a < -stall_angle:
-        c_l = -c_l_peak - c_l_stallSlope * (a + stall_angle)
+    if a < -plane.stall_angle:
+        c_l = -c_l_peak - plane.c_l_stallSlope * (a + plane.stall_angle)
         if c_l > 0:
             c_l = 0
         return c_l
-    c_l = c_l_angleSlope * a + c_l_y_intercept
+    c_l = plane.c_l_angleSlope * a + plane.c_l_y_intercept
     return c_l
 
 def rescale():
     global plane_img, cloud_imgs
-    plane_img = pygame.transform.smoothscale(plane_src, (plane_size[0]*zoom, plane_size[1]*zoom))
+    plane_img = pygame.transform.smoothscale(plane_src, (plane.size[0]*zoom, plane.size[1]*zoom))
     cloud_imgs = [pygame.transform.smoothscale(c, (cloud_size[0]*zoom, cloud_size[1]*zoom)) for c in cloud_src]
 
 rescale()
@@ -136,26 +133,27 @@ def draw_2D_vector(vector, x, y, ref_max, label, unit):
     screen.blit(font.render(label, True, (0, 0, 0)), (x, y - 16))
     screen.blit(font.render(f'{mag:.0f} {unit}', True, (60, 60, 60)), (x, y + size + 2))
 
-def draw_wing(x, y, body_a, flight_a):
-    pygame.draw.rect(screen, (235, 235, 235), (x, y, 160, 100))
-    pygame.draw.rect(screen, (90, 90, 90), (x, y, 160, 100), width=1)
+def draw_wing(x, y, pitch, flight_a):
+    pygame.draw.rect(screen, (235, 235, 235), (x, y, 160, 90))
+    pygame.draw.rect(screen, (90, 90, 90), (x, y, 160, 90), width=1)
     cx = x + 80
-    cy = y + 50
+    cy = y + 45
 
     # oncoming air, always right to left
-    for ay in (cy - 30, cy, cy + 30):
+    for ay in (cy - 26, cy, cy + 26):
         pygame.draw.line(screen, (120, 120, 255), (x + 150, ay), (x + 10, ay), width=1)
         pygame.draw.line(screen, (120, 120, 255), (x + 10, ay), (x + 18, ay - 4), width=1)
         pygame.draw.line(screen, (120, 120, 255), (x + 10, ay), (x + 18, ay + 4), width=1)
 
     # wing, tilted by angle of attack
-    br = math.radians(body_a - flight_a)
-    dx = 35 * math.cos(br)
-    dy = -35 * math.sin(br)
+    wing_aoa = (pitch - flight_a + 180) % 360 - 180
+    br = math.radians(wing_aoa)
+    dx = 32 * math.cos(br)
+    dy = -32 * math.sin(br)
     pygame.draw.line(screen, (0, 0, 0), (cx - dx, cy - dy), (cx + dx, cy + dy), width=5)
 
     screen.blit(font.render('wing', True, (0, 0, 0)), (x, y - 16))
-    screen.blit(font.render(f'AoA {body_a - flight_a:.1f} deg', True, (60, 60, 60)), (x, y + 102))
+    screen.blit(font.render(f'AoA {wing_aoa:.1f} deg', True, (60, 60, 60)), (x, y + 92))
 
 running = True
 while running:
@@ -177,13 +175,26 @@ while running:
     acc = Vector2(0, 0)
 
     if keys[pygame.K_LEFT]:
-        current_thrust = max(current_thrust - thrust_step, 0)
+        current_thrust = max(current_thrust - plane.thrust_step, 0)
     if keys[pygame.K_RIGHT]:
-        current_thrust = min(current_thrust + thrust_step, plane_max_thrust)
+        current_thrust = min(current_thrust + plane.thrust_step, plane.max_thrust)
     if keys[pygame.K_UP]:
-        body_angle += angle_step
+        body_pitch += pitch_step
     if keys[pygame.K_DOWN]:
-        body_angle -= angle_step
+        body_pitch -= pitch_step
+
+    # keep pitch in -180 to 180
+    body_pitch = (body_pitch + 180) % 360 - 180
+
+    # burn fuel, mass drops
+    fuel_burn_rate = plane.tsfc * current_thrust
+    fuel_mass = fuel_mass - fuel_burn_rate * dt
+    if fuel_mass < 0:
+        fuel_mass = 0
+    if fuel_mass == 0:
+        current_thrust = 0
+    mass = plane.dry_mass + fuel_mass
+    force_gravity = Vector2(0, 9.81*mass)
 
     # ground contact
     if pos.y + RADIUS >= GROUND_Y:
@@ -194,30 +205,38 @@ while running:
     else:
         on_ground = False
 
-    # thrust acts along the body angle
-    current_thrust_force = Vector2(math.cos(math.radians(body_angle)),
-                                   -math.sin(math.radians(body_angle))) * current_thrust
+    # atmosphere at current altitude
+    altitude = GROUND_Y - (pos.y + RADIUS)
+    air_temp = temp_sea_level - lapse_rate * altitude
+    if air_temp < 216.65:
+        air_temp = 216.65
+    rho = rho_sea_level * (air_temp / temp_sea_level) ** rho_exponent
+    speed_of_sound = 20.05 * math.sqrt(air_temp)
+
+    # thrust acts along the body pitch
+    current_thrust_force = Vector2(math.cos(math.radians(body_pitch)),
+                                   -math.sin(math.radians(body_pitch))) * current_thrust
 
     # angle of attack
     if vel.magnitude() > 1:
         flight_angle = -math.degrees(math.atan2(vel.y, vel.x))
     else:
         flight_angle = 0
-    aoa = body_angle - flight_angle
+    aoa = (body_pitch - flight_angle + 180) % 360 - 180
     c_l = c_l_fromAngle(aoa)
 
     # lift, perpendicular to velocity
     if vel.magnitude() > 1:
-        lift_mag = 0.5 * c_l * rho * vel.magnitude()**2 * wing_area
+        lift_mag = 0.5 * c_l * rho * vel.magnitude()**2 * plane.wing_area
         force_lift = Vector2(vel.y, -vel.x).normalize() * lift_mag
     else:
         force_lift = Vector2(0, 0)
 
     # drag, opposite to velocity
     if vel.magnitude() > 1:
-        dyn_pressure = 0.5 * rho * vel.magnitude()**2 * wing_area
-        c_d_induced = c_l**2 / (math.pi * aspect_ratio * oswald_efficiency)
-        f_drag_parasite = -vel.normalize() * c_d_parasite * dyn_pressure
+        dyn_pressure = 0.5 * rho * vel.magnitude()**2 * plane.wing_area
+        c_d_induced = c_l**2 / (math.pi * plane.aspect_ratio * plane.oswald_efficiency)
+        f_drag_parasite = -vel.normalize() * plane.c_d_parasite * dyn_pressure
         f_drag_induced = -vel.normalize() * c_d_induced * dyn_pressure
         force_drag = f_drag_parasite + f_drag_induced
     else:
@@ -239,7 +258,7 @@ while running:
 
     # friction opposes rolling, scaled by how much weight is on the wheels
     if on_ground and vel.x != 0:
-        force_ground_friction = Vector2(-(vel.x/abs(vel.x))*(0.03*normal_force.magnitude()), 0)
+        force_ground_friction = Vector2(-(vel.x/abs(vel.x))*(plane.rolling_friction*normal_force.magnitude()), 0)
     else:
         force_ground_friction = Vector2(0, 0)
 
@@ -260,6 +279,9 @@ while running:
     # --- data logging ---
     altitude = GROUND_Y - (pos.y + RADIUS)
     x_disp = pos.x - start_x
+    mach = vel.magnitude() / speed_of_sound
+    fuel_volume = fuel_mass / 0.804
+    fuel_percent = fuel_mass / plane.fuel_mass_max * 100
     if save_raw_data and sim_time >= next_log_time:
         next_log_time += save_log_dt
         run_data.append([
@@ -268,8 +290,11 @@ while running:
             round(x_disp, 3), round(altitude, 3),
             round(vel.x, 3), round(vel.y, 3), round(vel.magnitude(), 3),
             round(acc.x, 3), round(acc.y, 3),
-            round(body_angle, 2), round(flight_angle, 2), round(aoa, 2),
+            round(body_pitch, 2), round(flight_angle, 2), round(aoa, 2),
             round(c_l, 4), round(c_d_induced, 4),
+            round(rho, 4), round(air_temp, 2), round(speed_of_sound, 2), round(mach, 4),
+            round(mass, 1), round(fuel_mass, 2), round(fuel_volume, 1),
+            round(fuel_percent, 2), round(fuel_burn_rate, 4),
             round(current_thrust, 1),
             round(current_thrust_force.x, 1), round(current_thrust_force.y, 1),
             round(force_lift.x, 1), round(force_lift.y, 1),
@@ -278,7 +303,7 @@ while running:
             round(force_ground_friction.x, 1),
             round(normal_force.y, 1),
             round(netForce.x, 1), round(netForce.y, 1),
-            int(on_ground), int(abs(aoa) > stall_angle)
+            int(on_ground), int(abs(aoa) > plane.stall_angle)
         ])
 
     # camera pans only when the player passes the margin
@@ -315,7 +340,7 @@ while running:
         screen.blit(cloud_imgs[randnum], img_rect)
 
     # player
-    rot_img = pygame.transform.rotate(plane_img, body_angle)
+    rot_img = pygame.transform.rotate(plane_img, body_pitch)
     img_rect = rot_img.get_rect(center=(
         (pos.x - cam_pos.x) * zoom + WIDTH / 2,
         (pos.y - cam_pos.y) * zoom + HEIGHT / 2
@@ -330,38 +355,59 @@ while running:
         pygame.draw.line(screen, (0, 0, 255), (px, py), (px + vdir.x, py + vdir.y), width=2)
 
     if show_extra_displays:
-        draw_2D_vector(acc,      30,  40, 20,     'acc',   'm/s²')
-        draw_2D_vector(vel,      30, 168, 150,    'vel',   'mph')
-        draw_2D_vector(netForce, 30, 296, 700000, 'force', 'kN')
+        # gauges, two columns
+        draw_2D_vector(acc,      20,  40, acc_ref,   'acc',   'm/s²')
+        draw_2D_vector(vel,     118,  40, vel_ref,   'vel',   'mph')
+        draw_2D_vector(netForce, 20, 180, force_ref, 'force', 'kN')
 
-        # throttle gauge
-        throttle = current_thrust / plane_max_thrust * 100
-        pygame.draw.rect(screen, (235, 235, 235), (30, 426, 30, 88))
-        pygame.draw.rect(screen, (200, 0, 0), (30, 514 - throttle*0.88, 30, throttle*0.88))
-        pygame.draw.rect(screen, (90, 90, 90), (30, 426, 30, 88), width=1)
-        screen.blit(font.render('throttle', True, (0, 0, 0)), (30, 410))
-        screen.blit(font.render(f'{throttle:.0f} %', True, (60, 60, 60)), (30, 516))
+        # throttle and fuel bars
+        throttle = current_thrust / plane.max_thrust * 100
+        pygame.draw.rect(screen, (235, 235, 235), (118, 180, 30, 88))
+        pygame.draw.rect(screen, (200, 0, 0), (118, 268 - throttle*0.88, 30, throttle*0.88))
+        pygame.draw.rect(screen, (90, 90, 90), (118, 180, 30, 88), width=1)
+        pygame.draw.rect(screen, (235, 235, 235), (158, 180, 30, 88))
+        pygame.draw.rect(screen, (40, 120, 200), (158, 268 - fuel_percent*0.88, 30, fuel_percent*0.88))
+        pygame.draw.rect(screen, (90, 90, 90), (158, 180, 30, 88), width=1)
+        screen.blit(font.render('thr', True, (0, 0, 0)), (118, 164))
+        screen.blit(font.render('fuel', True, (0, 0, 0)), (158, 164))
+        screen.blit(font.render(f'{throttle:.0f}%', True, (60, 60, 60)), (118, 270))
+        screen.blit(font.render(f'{fuel_percent:.0f}%', True, (60, 60, 60)), (158, 270))
 
         # readouts
+        screen.blit(font.render(plane.name, True, (0, 0, 0)), (20, 300))
+        screen.blit(font.render(f'fuel     {fuel_mass:8.0f} kg', True, (0, 0, 0)), (20, 324))
+        screen.blit(font.render(f'         {fuel_volume:8.0f} L', True, (0, 0, 0)), (20, 342))
+        screen.blit(font.render(f'mass     {mass/1000:8.2f} t', True, (0, 0, 0)), (20, 360))
+
         if abs(altitude) >= 1000:
-            screen.blit(font.render(f'altitude   {altitude/1000:8.2f} km', True, (0, 0, 0)), (30, 546))
+            screen.blit(font.render(f'altitude {altitude/1000:8.2f} km', True, (0, 0, 0)), (20, 384))
         else:
-            screen.blit(font.render(f'altitude   {altitude:8.1f} m', True, (0, 0, 0)), (30, 546))
+            screen.blit(font.render(f'altitude {altitude:8.1f} m', True, (0, 0, 0)), (20, 384))
 
         if abs(x_disp) >= 1000:
-            screen.blit(font.render(f'x-disp     {x_disp/1000:8.2f} km', True, (0, 0, 0)), (30, 564))
+            screen.blit(font.render(f'x-disp   {x_disp/1000:8.2f} km', True, (0, 0, 0)), (20, 402))
         else:
-            screen.blit(font.render(f'x-disp     {x_disp:8.1f} m', True, (0, 0, 0)), (30, 564))
+            screen.blit(font.render(f'x-disp   {x_disp:8.1f} m', True, (0, 0, 0)), (20, 402))
 
-        screen.blit(font.render(f'lift coeff {c_l:8.2f}', True, (0, 0, 0)), (30, 582))
-        screen.blit(font.render(f'drag ind   {c_d_induced:8.3f}', True, (0, 0, 0)), (30, 600))
-        if abs(aoa) > stall_angle:
-            screen.blit(font.render('STALL', True, (200, 0, 0)), (30, 618))
+        screen.blit(font.render(f'pitch    {body_pitch:8.0f} deg', True, (0, 0, 0)), (20, 420))
+        screen.blit(font.render(f'c_l      {c_l:8.2f}', True, (0, 0, 0)), (20, 438))
+        screen.blit(font.render(f'c_d ind  {c_d_induced:8.3f}', True, (0, 0, 0)), (20, 456))
+
+        if abs(aoa) > plane.stall_angle:
+            screen.blit(font.render('STALL', True, (200, 0, 0)), (20, 480))
         if on_ground:
-            screen.blit(font.render('GROUNDED', True, (200, 0, 0)), (30, 636))
+            screen.blit(font.render('GROUNDED', True, (200, 0, 0)), (78, 480))
 
-        # wing diagram
-        draw_wing(WIDTH - 190, 30, body_angle, flight_angle)
+        # wing diagram and atmosphere, right edge
+        draw_wing(WIDTH - 190, 30, body_pitch, flight_angle)
+
+        pygame.draw.rect(screen, (235, 235, 235), (WIDTH - 190, 176, 160, 78))
+        pygame.draw.rect(screen, (90, 90, 90), (WIDTH - 190, 176, 160, 78), width=1)
+        screen.blit(font.render('atmosphere', True, (0, 0, 0)), (WIDTH - 190, 160))
+        screen.blit(font.render(f'rho   {rho:5.3f} kg/m3', True, (60, 60, 60)), (WIDTH - 184, 180))
+        screen.blit(font.render(f'temp  {air_temp - 273.15:5.1f} C', True, (60, 60, 60)), (WIDTH - 184, 198))
+        screen.blit(font.render(f'sound {speed_of_sound:5.1f} m/s', True, (60, 60, 60)), (WIDTH - 184, 216))
+        screen.blit(font.render(f'mach  {mach:5.3f}', True, (60, 60, 60)), (WIDTH - 184, 234))
 
     pygame.display.flip()
     clock.tick(FPS)
@@ -370,14 +416,17 @@ pygame.quit()
 
 # --- write run data ---
 if save_raw_data and run_data:
-    filename = f"flightsim_{start_time.strftime('%Y-%m-%d_%H-%M')}_{int(sim_time)}sec.csv"
+    filename = f"flightsim_{plane.name.split()[-1]}_{start_time.strftime('%Y-%m-%d_%H-%M')}_{int(sim_time)}sec.csv"
     with open(filename, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['time_s', 'pos_x_m', 'pos_y_m', 'x_disp_m', 'altitude_m',
                          'vel_x_ms', 'vel_y_ms', 'speed_ms',
                          'acc_x_ms2', 'acc_y_ms2',
-                         'body_angle_deg', 'flight_angle_deg', 'aoa_deg',
+                         'body_pitch_deg', 'flight_angle_deg', 'aoa_deg',
                          'c_l', 'c_d_induced',
+                         'rho_kgm3', 'air_temp_K', 'speed_of_sound_ms', 'mach',
+                         'mass_kg', 'fuel_mass_kg', 'fuel_volume_L',
+                         'fuel_percent', 'fuel_burn_kgs',
                          'thrust_N', 'thrust_x_N', 'thrust_y_N',
                          'lift_x_N', 'lift_y_N',
                          'drag_x_N', 'drag_y_N',
