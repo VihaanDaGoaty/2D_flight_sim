@@ -14,6 +14,11 @@ WIDTH, HEIGHT = 800, 800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 clock = pygame.time.Clock()
 FPS = 60
+rho = 1.225 #units are kg per m^3
+wing_area = 122.4 #units are meters^3
+stall_angle = 13.682 #units are degrees
+c_l_angleSlope = 0.09 #units are 1/degrees
+c_l_y_intercept = 0.15 #unitless
 
 # colors
 SKY_BLUE = (135, 206, 235)
@@ -58,6 +63,10 @@ cloud_src = [pygame.image.load("cloud0.png"),
              pygame.image.load("cloud1.png"),
              pygame.image.load("cloud2.png"),
              pygame.image.load("cloud3.png")]
+
+def c_l_fromAngle(a):
+    c_l = c_l_angleSlope * a + c_l_y_intercept 
+    return c_l
 
 def rescale():
     global plane_img, cloud_imgs
@@ -206,6 +215,7 @@ while running:
     x_disp = pos.x - start_x
     screen.blit(font.render(f'altitude   {altitude:8.1f} m', True, (0, 0, 0)), (30, 500))
     screen.blit(font.render(f'x-disp     {x_disp:8.1f} m',   True, (0, 0, 0)), (30, 518))
+    screen.blit(font.render(f'lift coeff {c_l_fromAngle(body_angle):8.2f}', True, (0, 0, 0)), (30, 536))
 
     pygame.display.flip()
     clock.tick(FPS)
