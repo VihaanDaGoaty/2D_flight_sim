@@ -7,7 +7,7 @@ import math
 import csv
 import datetime
 
-import F16 as plane
+import A320 as plane
 
 # --- setup ---
 pygame.init()
@@ -182,6 +182,20 @@ while running:
         body_pitch += pitch_step
     if keys[pygame.K_DOWN]:
         body_pitch -= pitch_step
+    if keys[pygame.K_1]:
+        import A320 as plane
+    if keys[pygame.K_2]:
+        import F16 as plane
+    if keys[pygame.K_3]:
+        import C172 as plane
+    if keys[pygame.K_1] or keys[pygame.K_2] or keys[pygame.K_3]:
+        plane_src = pygame.image.load(plane.image_file)
+        current_thrust = min(current_thrust, plane.max_thrust)
+        fuel_mass = min(fuel_mass, plane.fuel_mass_max)
+        RADIUS = plane.size[1]/2
+        force_ref = plane.dry_mass*9.81*0.5
+        rescale()
+
 
     # keep pitch in -180 to 180
     body_pitch = (body_pitch + 180) % 360 - 180
