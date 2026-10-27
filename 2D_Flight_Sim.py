@@ -19,6 +19,8 @@ screen = pygame.display.set_mode((WIDTH, HEIGHT))
 clock = pygame.time.Clock()
 FPS = 60
 
+bob = 1
+
 # display options
 show_camera_move_margin = True
 show_extra_displays = True
