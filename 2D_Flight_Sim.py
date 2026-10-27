@@ -7,6 +7,8 @@ import math
 import csv
 import datetime
 
+bob_junior = 1
+
 import A320 as plane
 
 # --- setup ---
