@@ -21,11 +21,20 @@ screen = pygame.display.set_mode((WIDTH, HEIGHT))
 clock = pygame.time.Clock()
 FPS = 60
 
+# Load images from the same folder as this script.
+ASSET_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # display options
 show_camera_move_margin = True
 show_extra_displays = True
 save_raw_data = True
 save_log_dt = 0.1 #seconds between logged rows
+
+# background buildings
+building_parallax = 0.85  # 1 = normal scrolling; lower = more distant
+building_spacing = 160  # average distance between buildings, in meters
+building_heights = (25, 40, 60)  # possible building heights, in meters
+building_seed = random.randrange(1_000_000_000)  # new scenery each run
 
 # international standard atmosphere, troposphere
 rho_sea_level = 1.225 #units are kg per m^3
@@ -77,11 +86,29 @@ run_data = []
 sim_time = 0
 next_log_time = 0
 
-plane_src = pygame.image.load(plane.image_file)
-cloud_src = [pygame.image.load("cloud0.png"),
-             pygame.image.load("cloud1.png"),
-             pygame.image.load("cloud2.png"),
-             pygame.image.load("cloud3.png")]
+plane_src = pygame.image.load(os.path.join(ASSET_DIR, plane.image_file))
+cloud_src = [pygame.image.load(os.path.join(ASSET_DIR, "cloud0.png")),
+             pygame.image.load(os.path.join(ASSET_DIR, "cloud1.png")),
+             pygame.image.load(os.path.join(ASSET_DIR, "cloud2.png")),
+             pygame.image.load(os.path.join(ASSET_DIR, "cloud3.png"))]
+
+# Find building1.png, building2.png, etc. Gaps in numbering are fine.
+building_files = [
+    filename for filename in os.listdir(ASSET_DIR)
+    if filename.startswith("building")
+    and filename.endswith(".png")
+    and filename[8:-4].isdigit()
+]
+building_files.sort(key=lambda filename: int(filename[8:-4]))
+
+building_src = []
+for filename in building_files:
+    img = pygame.image.load(os.path.join(ASSET_DIR, filename)).convert_alpha()
+    # Remove transparent padding so each building sits on the ground.
+    bounds = img.get_bounding_rect()
+    if bounds.width > 0 and bounds.height > 0:
+        building_src.append(img.subsurface(bounds).copy())
+
 
 def c_l_fromAngle(a):
     c_l_peak = plane.c_l_angleSlope * plane.stall_angle + plane.c_l_y_intercept
@@ -99,11 +126,47 @@ def c_l_fromAngle(a):
     return c_l
 
 def rescale():
-    global plane_img, cloud_imgs
+    global plane_img, cloud_imgs, building_imgs
     plane_img = pygame.transform.smoothscale(plane_src, (plane.size[0]*zoom, plane.size[1]*zoom))
     cloud_imgs = [pygame.transform.smoothscale(c, (cloud_size[0]*zoom, cloud_size[1]*zoom)) for c in cloud_src]
 
+    # Prepare the building sizes once, then reuse them each frame.
+    building_imgs = []
+    for src in building_src:
+        for height in building_heights:
+            # Preserve proportions and keep very wide images manageable.
+            scale = min(height / src.get_height(),
+                        building_spacing * 0.7 / src.get_width()) * zoom
+            size = (max(1, round(src.get_width() * scale)),
+                    max(1, round(src.get_height() * scale)))
+            building_imgs.append(pygame.transform.smoothscale(src, size))
+
 rescale()
+
+
+def draw_buildings(ground_screen_y):
+    if not building_imgs:
+        return
+
+    # Only horizontal movement has parallax. The bases stay on the ground
+    # when the camera climbs or descends.
+    background_cam_x = start_x + (cam_pos.x - start_x) * building_parallax
+    half_view = WIDTH / (2 * zoom)
+    first_slot = math.floor((background_cam_x - half_view) / building_spacing) - 1
+    last_slot = math.floor((background_cam_x + half_view) / building_spacing) + 1
+    view_rect = screen.get_rect()
+
+    for slot in range(first_slot, last_slot + 1):
+        # Each slot has repeatable randomness. Flying back shows the same
+        # buildings, and scenery continues in either direction indefinitely.
+        rng = random.Random(f"{building_seed}:{slot}")
+        world_x = slot * building_spacing + rng.uniform(
+            -building_spacing * 0.2, building_spacing * 0.2)
+        img = building_imgs[rng.randrange(len(building_imgs))]
+        screen_x = (world_x - background_cam_x) * zoom + WIDTH / 2
+        rect = img.get_rect(midbottom=(round(screen_x), round(ground_screen_y)))
+        if rect.colliderect(view_rect):
+            screen.blit(img, rect)
 
 def draw_2D_vector(vector, x, y, ref_max, label, unit):
     size = 88
@@ -191,7 +254,7 @@ while running:
     if keys[pygame.K_3]:
         import C172 as plane
     if keys[pygame.K_1] or keys[pygame.K_2] or keys[pygame.K_3]:
-        plane_src = pygame.image.load(plane.image_file)
+        plane_src = pygame.image.load(os.path.join(ASSET_DIR, plane.image_file))
         current_thrust = min(current_thrust, plane.max_thrust)
         fuel_mass = min(fuel_mass, plane.fuel_mass_max)
         RADIUS = plane.size[1]/2
@@ -354,6 +417,9 @@ while running:
         )
         img_rect = cloud_imgs[randnum].get_rect(center=cloudCenter)
         screen.blit(cloud_imgs[randnum], img_rect)
+
+    # Buildings sit behind the aircraft and in front of the clouds.
+    draw_buildings(ground_sy)
 
     # player
     rot_img = pygame.transform.rotate(plane_img, body_pitch)
